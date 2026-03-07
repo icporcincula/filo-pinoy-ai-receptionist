@@ -1,0 +1,1 @@
+echo 'export $(cat .env | grep -v '"'"'^#'"'"' | xargs) && go run ./cmd/orchestrator'

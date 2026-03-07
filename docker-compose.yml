@@ -1,0 +1,37 @@
+version: "3.9"
+
+# Starts: Redis (history) + Speaches (Whisper STT, GPU)
+# Run: docker compose up -d
+#
+# Ollama and Kokoro run natively on Windows (not here).
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --save 60 1 --loglevel warning
+
+  speaches:
+    image: fedirz/faster-whisper-server:latest-cpu
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      WHISPER__MODEL: Systman/faster-whisper-small
+      WHISPER__INFERENCE_DEVICE: cpu
+      WHISPER__MODEL_TTL: 0
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  redis-data:

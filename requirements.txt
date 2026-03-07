@@ -1,0 +1,20 @@
+# Voice Receptionist — Python dependencies
+# Install: pip install -r requirements.txt
+#
+# Before running kokoro_server.py, download model files once:
+#   curl -L https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx -o kokoro-v1.0.onnx
+#   curl -L https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin  -o voices-v1.0.bin
+
+# Kokoro TTS (ONNX-based, no PyTorch required)
+kokoro-onnx>=0.4.2
+
+# WAV encoding for TTS output
+soundfile>=0.12.1
+
+# Required by soundfile on some platforms
+numpy>=1.26.0
+
+# API server
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0

@@ -1,0 +1,478 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"math"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
+)
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+type Config struct {
+	Port        string
+	SpeachesURL string
+	OllamaURL   string
+	KokoroURL   string
+	RedisAddr   string
+	LLMModel    string
+	SystemPrompt string
+}
+
+func loadConfig() Config {
+	get := func(key, def string) string {
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
+		return def
+	}
+	return Config{
+		Port:        get("PORT", "8080"),
+		SpeachesURL: get("SPEACHES_URL", "http://localhost:8000"),
+		OllamaURL:   get("OLLAMA_URL", "http://localhost:11434"),
+		KokoroURL:   get("KOKORO_URL", "http://localhost:5000"),
+		RedisAddr:   get("REDIS_ADDR", "localhost:6379"),
+		LLMModel:    get("LLM_MODEL", "llama3.1:8b"),
+		SystemPrompt: get("SYSTEM_PROMPT",
+			"You are a helpful, concise voice assistant. Keep responses short and conversational. Avoid markdown formatting."),
+	}
+}
+
+// ── WebSocket messages ────────────────────────────────────────────────────────
+
+// Client → Server
+type InboundMsg struct {
+	Type string `json:"type"`
+	// type: "audio"  — PCM chunk as raw binary (separate ws message)
+	// type: "config" — future: persona, language
+}
+
+// Server → Client
+type OutboundMsg struct {
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	AudioB64   []byte `json:"audio,omitempty"` // WAV bytes, client decodes
+	Transcript string `json:"transcript,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// ── VAD ───────────────────────────────────────────────────────────────────────
+// Input: 16kHz mono s16le PCM (from browser AudioContext at 16kHz)
+// Browser sends 100ms chunks (1600 samples = 3200 bytes)
+
+const (
+	vadSilenceMs    = 1200  // wait longer before cutting off
+	vadMinSpeechMs  = 100   // catch shorter utterances
+	vadEnergyThresh = 100   // lower threshold — more sensitive
+	vadSampleRate   = 16000
+)
+
+type vad struct {
+	mu           sync.Mutex
+	buf          []int16
+	silenceSamps int
+	speechSamps  int
+	active       bool
+	onUtterance  func([]int16)
+}
+
+func newVAD(onUtterance func([]int16)) *vad {
+	return &vad{onUtterance: onUtterance}
+}
+
+func (v *vad) feed(samples []int16) {
+	energy := rms(samples)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	silenceThresh := vadSilenceMs * vadSampleRate / 1000
+	minSpeech := vadMinSpeechMs * vadSampleRate / 1000
+
+	if energy >= vadEnergyThresh {
+		v.silenceSamps = 0
+		v.speechSamps += len(samples)
+		v.active = true
+		v.buf = append(v.buf, samples...)
+	} else if v.active {
+		v.silenceSamps += len(samples)
+		v.buf = append(v.buf, samples...)
+		if v.silenceSamps >= silenceThresh {
+			if v.speechSamps >= minSpeech {
+				out := make([]int16, len(v.buf))
+				copy(out, v.buf)
+				go v.onUtterance(out)
+			} else {
+				log.Printf("VAD: dropped utterance, too short (%dms)", v.speechSamps*1000/vadSampleRate)
+			}
+			v.buf = v.buf[:0]
+			v.speechSamps = 0
+			v.silenceSamps = 0
+			v.active = false
+		}
+	}
+}
+
+func rms(s []int16) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range s {
+		f := float64(v)
+		sum += f * f
+	}
+	return math.Sqrt(sum / float64(len(s)))
+}
+
+// ── Session ───────────────────────────────────────────────────────────────────
+
+type message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type session struct {
+	id     string
+	cfg    Config
+	conn   *websocket.Conn
+	rdb    *redis.Client
+	send   chan []byte
+	vad    *vad
+
+	// pipeline cancellation: cancel current TTS/LLM if user starts speaking
+	cancelMu  sync.Mutex
+	cancelFn  context.CancelFunc
+}
+
+func newSession(id string, conn *websocket.Conn, cfg Config, rdb *redis.Client) *session {
+	s := &session{
+		id:   id,
+		cfg:  cfg,
+		conn: conn,
+		rdb:  rdb,
+		send: make(chan []byte, 64),
+	}
+	s.vad = newVAD(s.onUtterance)
+	return s
+}
+
+// onUtterance is called by VAD in a separate goroutine when speech ends.
+func (s *session) onUtterance(pcm []int16) {
+	// Cancel any in-flight response (barge-in)
+	s.cancelMu.Lock()
+	if s.cancelFn != nil {
+		s.cancelFn()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	s.cancelFn = cancel
+	s.cancelMu.Unlock()
+	defer cancel()
+
+	// Signal barge-in to client
+	s.sendJSON(OutboundMsg{Type: "barge_in"})
+
+	// 1. STT
+	transcript, err := s.transcribe(ctx, pcm)
+	if err != nil {
+		log.Printf("[%s] STT error: %v", s.id, err)
+		s.sendJSON(OutboundMsg{Type: "error", Error: "transcription failed"})
+		return
+	}
+	if transcript == "" {
+		return
+	}
+	s.sendJSON(OutboundMsg{Type: "transcript", Transcript: transcript})
+	log.Printf("[%s] USER: %s", s.id, transcript)
+
+	// 2. History
+	history, _ := s.getHistory(ctx)
+	history = append(history, message{Role: "user", Content: transcript})
+
+	// 3. LLM
+	reply, err := s.chat(ctx, history)
+	if err != nil {
+		log.Printf("[%s] LLM error: %v", s.id, err)
+		s.sendJSON(OutboundMsg{Type: "error", Error: "LLM failed"})
+		return
+	}
+	log.Printf("[%s] BOT: %s", s.id, reply)
+	s.sendJSON(OutboundMsg{Type: "reply_text", Text: reply})
+
+	// 4. Save history
+	history = append(history, message{Role: "assistant", Content: reply})
+	s.saveHistory(ctx, history)
+
+	// 5. TTS
+	wav, err := s.synthesize(ctx, reply)
+	if err != nil {
+		log.Printf("[%s] TTS error: %v", s.id, err)
+		// Still delivered text, just no audio
+		return
+	}
+
+	s.sendBinary(wav)
+}
+
+// writePump drains send channel → WebSocket
+func (s *session) writePump() {
+	for data := range s.send {
+		if err := s.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+			log.Printf("[%s] write error: %v", s.id, err)
+			return
+		}
+	}
+}
+
+func (s *session) sendJSON(msg OutboundMsg) {
+	b, _ := json.Marshal(msg)
+	// prefix 0x00 = JSON, 0x01 = raw audio
+	framed := append([]byte{0x00}, b...)
+	select {
+	case s.send <- framed:
+	default:
+	}
+}
+
+func (s *session) sendBinary(wav []byte) {
+	// prefix 0x01 = audio WAV
+	framed := append([]byte{0x01}, wav...)
+	select {
+	case s.send <- framed:
+	default:
+	}
+}
+
+// readPump reads from WebSocket and feeds VAD.
+// Binary messages with no prefix = raw PCM s16le 16kHz mono.
+func (s *session) readPump() {
+	defer close(s.send)
+	for {
+		mt, data, err := s.conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		if mt == websocket.BinaryMessage {
+			// raw PCM from browser
+			samples := bytesToInt16(data)
+			s.vad.feed(samples)
+		}
+		// text messages reserved for future config
+	}
+}
+
+// ── STT ───────────────────────────────────────────────────────────────────────
+
+func (s *session) transcribe(ctx context.Context, pcm []int16) (string, error) {
+	// Build WAV in memory
+	wav := pcmToWAV(pcm, 16000, 1)
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "audio.wav")
+	if err != nil {
+		return "", err
+	}
+	fw.Write(wav)
+	mw.WriteField("model", "Systran/faster-whisper-medium")
+	mw.WriteField("language", "en")
+	mw.WriteField("response_format", "json")
+	mw.Close()
+
+	req, _ := http.NewRequestWithContext(ctx, "POST",
+		s.cfg.SpeachesURL+"/v1/audio/transcriptions", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Text string `json:"text"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result.Text, nil
+}
+
+// ── LLM ───────────────────────────────────────────────────────────────────────
+
+func (s *session) chat(ctx context.Context, history []message) (string, error) {
+	messages := []map[string]string{
+		{"role": "system", "content": s.cfg.SystemPrompt},
+	}
+	for _, m := range history {
+		messages = append(messages, map[string]string{
+			"role": m.Role, "content": m.Content,
+		})
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"model":    s.cfg.LLMModel,
+		"messages": messages,
+		"stream":   false,
+	})
+
+	req, _ := http.NewRequestWithContext(ctx, "POST",
+		s.cfg.OllamaURL+"/api/chat", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	rawBody, _ := io.ReadAll(resp.Body)
+	log.Printf("[%s] LLM raw: %s", s.id, string(rawBody))
+	var result struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	json.Unmarshal(rawBody, &result)
+	return result.Message.Content, nil
+}
+
+// ── TTS ───────────────────────────────────────────────────────────────────────
+
+func (s *session) synthesize(ctx context.Context, text string) ([]byte, error) {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"input": text,
+		"voice": "af_sky",
+		"response_format": "wav",
+	})
+
+	req, _ := http.NewRequestWithContext(ctx, "POST",
+		s.cfg.KokoroURL+"/v1/audio/speech", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return io.ReadAll(resp.Body)
+}
+
+// ── History (Redis) ───────────────────────────────────────────────────────────
+
+const historyKey = "receptionist:history:"
+const maxHistory = 20
+
+func (s *session) getHistory(ctx context.Context) ([]message, error) {
+	key := historyKey + s.id
+	data, err := s.rdb.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var h []message
+	json.Unmarshal(data, &h)
+	return h, nil
+}
+
+func (s *session) saveHistory(ctx context.Context, h []message) {
+	if len(h) > maxHistory {
+		h = h[len(h)-maxHistory:]
+	}
+	data, _ := json.Marshal(h)
+	s.rdb.Set(ctx, historyKey+s.id, data, 2*time.Hour)
+}
+
+// ── PCM / WAV helpers ─────────────────────────────────────────────────────────
+
+func bytesToInt16(b []byte) []int16 {
+	out := make([]int16, len(b)/2)
+	for i := range out {
+		out[i] = int16(binary.LittleEndian.Uint16(b[i*2:]))
+	}
+	return out
+}
+
+func pcmToWAV(pcm []int16, sampleRate, channels int) []byte {
+	numSamples := len(pcm)
+	dataSize := numSamples * 2
+	var buf bytes.Buffer
+	// RIFF header
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(36+dataSize))
+	buf.WriteString("WAVE")
+	// fmt chunk
+	buf.WriteString("fmt ")
+	binary.Write(&buf, binary.LittleEndian, uint32(16))
+	binary.Write(&buf, binary.LittleEndian, uint16(1)) // PCM
+	binary.Write(&buf, binary.LittleEndian, uint16(channels))
+	binary.Write(&buf, binary.LittleEndian, uint32(sampleRate))
+	binary.Write(&buf, binary.LittleEndian, uint32(sampleRate*channels*2))
+	binary.Write(&buf, binary.LittleEndian, uint16(channels*2))
+	binary.Write(&buf, binary.LittleEndian, uint16(16))
+	// data chunk
+	buf.WriteString("data")
+	binary.Write(&buf, binary.LittleEndian, uint32(dataSize))
+	for _, s := range pcm {
+		binary.Write(&buf, binary.LittleEndian, s)
+	}
+	return buf.Bytes()
+}
+
+// ── HTTP / WS server ──────────────────────────────────────────────────────────
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func main() {
+	cfg := loadConfig()
+
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	ctx := context.Background()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Printf("WARNING: Redis unavailable (%v) — history disabled", err)
+	}
+
+	// Serve static UI
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "ui/index.html")
+	})
+
+	// Health
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"ok":true}`)
+	})
+
+	// WebSocket
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("upgrade: %v", err)
+			return
+		}
+		sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
+		log.Printf("new session: %s", sessionID)
+
+		s := newSession(sessionID, conn, cfg, rdb)
+		go s.writePump()
+		s.readPump() // blocks until disconnect
+		log.Printf("session ended: %s", sessionID)
+	})
+
+	log.Printf("Receptionist server listening on :%s", cfg.Port)
+	log.Fatal(http.ListenAndServe(":"+cfg.Port, nil))
+}
