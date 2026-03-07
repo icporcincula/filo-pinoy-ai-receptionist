@@ -1,4 +1,4 @@
-# Voice Receptionist
+# Filo, the Pinoy AI Receptionist
 
 Local-first AI voice assistant with a browser UI. No Discord. No cloud.
 
