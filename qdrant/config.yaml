@@ -1,0 +1,100 @@
+# Qdrant configuration for Filo AI Receptionist
+# Optimized for RAG (Retrieval-Augmented Generation)
+
+# Service configuration
+service:
+  # HTTP port for REST API
+  http_port: 6333
+  # gRPC port for high-performance access
+  grpc_port: 6334
+  # Enable CORS for web applications
+  enable_cors: true
+  # CORS allowed origins (adjust for your domain)
+  cors_allow_origin: "*"
+  # API key for authentication
+  api_key: ${QDRANT_API_KEY}
+  # Timeout for requests
+  request_timeout: 60
+
+# Storage configuration
+storage:
+  # Path to store vectors and metadata
+  path: /qdrant/storage
+  # Optimizations
+  optimizers_config:
+    # Maximum number of segments to keep
+    max_segment_number: 5
+    # Minimum number of vectors in a segment
+    min_segment_size: 100
+    # Maximum number of vectors in a segment
+    max_segment_size: 100000
+    # Time to wait before optimizing segments
+    deleted_threshold: 0.9
+    # Vacuum deleted vectors after this many seconds
+    vacuum_min_vector_number: 1000
+    # Optimizer iterations
+    default_segment_number: 2
+    # Indexing threshold
+    indexing_threshold: 20000
+    # Flush interval
+    flush_interval_sec: 30
+    # Max segment size for indexing
+    max_optimization_threads: 2
+
+# Performance configuration
+performance:
+  # Number of threads for indexing
+  indexing_thread_pool_size: 12
+  # Number of threads for search
+  search_thread_pool_size: 12
+  # Number of threads for optimization
+  optimizer_thread_pool_size: 2
+  # Number of threads for recovery
+  recovery_thread_pool_size: 2
+
+# Telemetry and monitoring
+telemetry_collector:
+  # Enable telemetry
+  enabled: false
+  # Telemetry endpoint (if enabled)
+  endpoint: "http://localhost:4318/v1/metrics"
+
+# Logging configuration
+log:
+  # Log level
+  level: INFO
+  # Log format
+  format: json
+  # Log file path
+  file: /var/log/qdrant/qdrant.log
+  # Maximum log file size
+  max_log_file_size: 100MB
+  # Maximum number of log files to keep
+  max_log_files: 5
+
+# Collections default configuration
+collections:
+  # Default distance metric for vectors
+  default_distance: Cosine
+  # Default vector size
+  default_vector_size: 1536
+  # Default quantization
+  default_quantization: None
+
+# WAL (Write-Ahead Log) configuration
+wal:
+  # WAL segment size
+  wal_capacity_mb: 1024
+  # WAL segment threshold
+  wal_segments_ahead: 0
+
+# Cluster configuration (for future scaling)
+cluster:
+  # Enable clustering
+  enabled: false
+  # Peer discovery
+  peer_address: ""
+  # Consensus timeout
+  consensus_timeout: 1000
+  # Number of peers
+  number_of_peers: 1

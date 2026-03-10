@@ -1,0 +1,283 @@
+version: "3.9"
+
+# Production deployment configuration for Filo AI Receptionist
+# Run with: docker-compose -f docker-compose.prod.yml up -d
+#
+# This configuration includes:
+# - Production-optimized services with health checks
+# - Resource limits and restart policies
+# - Production networking and security
+# - Monitoring and logging configuration
+
+services:
+
+  # -------------------------------------------------------------------------
+  # Short-Term Session Memory (Production Redis)
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: filo-redis-prod
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel notice --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    networks:
+      - filo-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------------------------------------------------------------------------
+  # Long-Term Knowledge Store (Qdrant for RAG)
+  # -------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: filo-qdrant-prod
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__STORAGE__PATH=/qdrant/storage
+    volumes:
+      - qdrant_storage:/qdrant/storage
+      - ./qdrant/config.yaml:/qdrant/config/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    networks:
+      - filo-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------------------------------------------------------------------------
+  # Speech-to-Text (Faster-Whisper, GPU-accelerated)
+  # -------------------------------------------------------------------------
+  speaches:
+    image: ghcr.io/speaches-ai/speaches:latest-cuda
+    container_name: filo-stt-prod
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - WHISPER_MODEL=Systran/faster-whisper-medium
+      - DEVICE=cuda
+      - COMPUTE_TYPE=float16
+      - WHISPER__MODEL_TTL=0
+    volumes:
+      - speaches_models:/root/.cache/huggingface
+      - ./speaches/config.yaml:/app/config.yaml:ro
+    # GPU passthrough via CDI (Container Device Interface)
+    devices:
+      - nvidia.com/gpu=all
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    networks:
+      - filo-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------------------------------------------------------------------------
+  # Workflow Automation (n8n)
+  # -------------------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n
+    container_name: filo-n8n-prod
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - N8N_EXTERNAL_FRONTEND_HOST=${N8N_HOST:-localhost}
+      - N8N_EXTERNAL_FRONTEND_PORT=5678
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - DB_TYPE=sqlite
+      - DB_SQLITE_FILE_PATH=/home/node/.n8n/database.sqlite
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/settings.js:/home/node/.n8n/settings.js:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    networks:
+      - filo-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------------------------------------------------------------------------
+  # Nginx Reverse Proxy with SSL
+  # -------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: filo-nginx-prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+      - ./nginx/html:/usr/share/nginx/html:ro
+    depends_on:
+      - go-server
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    networks:
+      - filo-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # -------------------------------------------------------------------------
+  # Go Server (Containerized)
+  # -------------------------------------------------------------------------
+  go-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: filo-go-server-prod
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - SPEACHES_URL=http://speaches:8000
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - KOKORO_URL=http://host.docker.internal:5000
+      - REDIS_ADDR=redis:6379
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - SYSTEM_PROMPT=${SYSTEM_PROMPT}
+      - TEN_VAD_MODE=${TEN_VAD_MODE:-2}
+      - TURN_DETECTION_BASE_URL=${TURN_DETECTION_BASE_URL:-http://localhost:8000/v1}
+      - TURN_DETECTION_API_KEY=${TURN_DETECTION_API_KEY}
+      - TURN_DETECTION_MODEL=${TURN_DETECTION_MODEL:-turn-detection-model}
+      - TURN_DETECTION_TEMPERATURE=${TURN_DETECTION_TEMPERATURE:-0.1}
+      - TURN_DETECTION_TOP_P=${TURN_DETECTION_TOP_P:-0.1}
+      - TURN_DETECTION_THRESHOLD_MS=${TURN_DETECTION_THRESHOLD_MS:-50}
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-knowledge_base}
+      - N8N_URL=http://n8n:5678
+      - N8N_USER=${N8N_USER}
+      - N8N_PASSWORD=${N8N_PASSWORD}
+      - BUSINESS_NAME=${BUSINESS_NAME}
+      - BUSINESS_HOURS=${BUSINESS_HOURS}
+      - BUSINESS_LANGUAGE=${BUSINESS_LANGUAGE}
+      - PERSONALITY_FRIENDLY=${PERSONALITY_FRIENDLY:-true}
+      - PERSONALITY_FORMAL=${PERSONALITY_FORMAL:-false}
+      - GOOGLE_CALENDAR_ID=${GOOGLE_CALENDAR_ID}
+      - GOOGLE_CREDENTIALS_PATH=${GOOGLE_CREDENTIALS_PATH}
+    volumes:
+      - ./server/config:/app/config:ro
+      - ./server/logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    networks:
+      - filo-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  redis_data:
+    driver: local
+  qdrant_storage:
+    driver: local
+  speaches_models:
+    driver: local
+  n8n_data:
+    driver: local
+
+networks:
+  filo-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
