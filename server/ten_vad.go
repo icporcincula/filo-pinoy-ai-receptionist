@@ -10,7 +10,7 @@ import (
 // Constants for VAD configuration
 const (
 	vadSampleRate = 16000
-	vadFrameMs    = 30
+	vadFrameMs    = 10
 	vadFrameSize  = vadSampleRate * vadFrameMs / 1000
 )
 

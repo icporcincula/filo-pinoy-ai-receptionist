@@ -71,6 +71,7 @@ func (pm *PersonaManager) GetDefaultPersona() *Persona {
 // GenerateSystemPrompt generates a dynamic system prompt based on persona and business context
 func (pm *PersonaManager) GenerateSystemPrompt(cfg Config) string {
 	persona := pm.GetPersona("business") // Use business persona if available
+	var systemPrompt string
 	
 	// Build the system prompt
 	var promptBuilder strings.Builder
@@ -298,7 +299,7 @@ func (tm *TemplateManager) GetTemplate(intent string, context map[string]interfa
 	for _, template := range templates {
 		if template.Priority > bestPriority {
 			// Check if template conditions are met
-			if tmmatchConditions(template.Conditions, context) {
+			ifmatchConditions(template.Conditions, context) {
 				bestTemplate = template
 				bestPriority = template.Priority
 			}
@@ -319,7 +320,7 @@ func (tm *TemplateManager) GetTemplate(intent string, context map[string]interfa
 }
 
 //matchConditions checks if template conditions are met
-func (tm *TemplateManager)matchConditions(conditions map[string]interface{}, context map[string]interface{}) bool {
+funcmatchConditions(conditions map[string]interface{}, context map[string]interface{}) bool {
 	if len(conditions) == 0 {
 		return true
 	}
