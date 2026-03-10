@@ -1,0 +1,64 @@
+{
+  "templates": [
+    {
+      "id": "appointment_booking",
+      "priority": 1,
+      "conditions": {
+        "intent": "book"
+      },
+      "template": "I can help you book an appointment. Let me check our availability for you.",
+      "tone": "helpful",
+      "formality": "neutral"
+    },
+    {
+      "id": "appointment_confirmation",
+      "priority": 2,
+      "conditions": {
+        "appointment_status": "confirmed"
+      },
+      "template": "Great! Your appointment has been confirmed for {{appointment_date}} at {{appointment_time}}. You will receive a confirmation email shortly.",
+      "tone": "professional",
+      "formality": "neutral"
+    },
+    {
+      "id": "appointment_unavailable",
+      "priority": 3,
+      "conditions": {
+        "availability": "none"
+      },
+      "template": "I'm sorry, but we don't have any available slots for your requested time. Would you like to try a different date or time?",
+      "tone": "apologetic",
+      "formality": "neutral"
+    },
+    {
+      "id": "appointment_options",
+      "priority": 4,
+      "conditions": {
+        "availability": "multiple"
+      },
+      "template": "I found several available time slots for you: {{available_slots}}. Which one would you prefer?",
+      "tone": "informative",
+      "formality": "neutral"
+    },
+    {
+      "id": "appointment_details",
+      "priority": 5,
+      "conditions": {
+        "intent": "appointment_details"
+      },
+      "template": "Your appointment is scheduled for {{appointment_date}} at {{appointment_time}} with {{provider_name}}. The appointment will be held at {{location}}.",
+      "tone": "clear",
+      "formality": "professional"
+    },
+    {
+      "id": "appointment_reminder",
+      "priority": 6,
+      "conditions": {
+        "reminder_type": "upcoming"
+      },
+      "template": "This is a reminder that you have an appointment scheduled for {{appointment_date}} at {{appointment_time}}. Please arrive 10 minutes early.",
+      "tone": "helpful",
+      "formality": "neutral"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "templates": [
+    {
+      "id": "morning_greeting",
+      "priority": 1,
+      "conditions": {
+        "time_of_day": "morning",
+        "business_hours": "open"
+      },
+      "template": "Good morning! Welcome to {{business_name}}. How can I help you today?",
+      "tone": "friendly",
+      "formality": "casual"
+    },
+    {
+      "id": "afternoon_greeting", 
+      "priority": 2,
+      "conditions": {
+        "time_of_day": "afternoon",
+        "business_hours": "open"
+      },
+      "template": "Good afternoon! Welcome to {{business_name}}. How can I assist you?",
+      "tone": "professional",
+      "formality": "neutral"
+    },
+    {
+      "id": "evening_greeting",
+      "priority": 3,
+      "conditions": {
+        "time_of_day": "evening",
+        "business_hours": "open"
+      },
+      "template": "Good evening! Welcome to {{business_name}}. How may I help you?",
+      "tone": "polite",
+      "formality": "formal"
+    },
+    {
+      "id": "closed_greeting",
+      "priority": 4,
+      "conditions": {
+        "business_hours": "closed"
+      },
+      "template": "Thank you for contacting {{business_name}}. We are currently closed, but I can help you with information or you can leave a message for our team.",
+      "tone": "helpful",
+      "formality": "neutral"
+    },
+    {
+      "id": "generic_greeting",
+      "priority": 5,
+      "conditions": {},
+      "template": "Hello! Welcome to {{business_name}}. How can I help you today?",
+      "tone": "friendly",
+      "formality": "casual"
+    }
+  ]
+}

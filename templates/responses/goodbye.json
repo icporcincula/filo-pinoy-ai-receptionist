@@ -1,0 +1,77 @@
+{
+  "templates": [
+    {
+      "id": "standard_goodbye",
+      "priority": 1,
+      "conditions": {
+        "intent": "goodbye"
+      },
+      "template": "Thank you for contacting {{business_name}}. Have a wonderful day!",
+      "tone": "friendly",
+      "formality": "casual"
+    },
+    {
+      "id": "appointment_goodbye",
+      "priority": 2,
+      "conditions": {
+        "intent": "goodbye",
+        "recent_interaction": "appointment"
+      },
+      "template": "Thank you for booking your appointment with {{business_name}}. We look forward to seeing you on {{appointment_date}}. Have a great day!",
+      "tone": "professional",
+      "formality": "neutral"
+    },
+    {
+      "id": "information_goodbye",
+      "priority": 3,
+      "conditions": {
+        "intent": "goodbye",
+        "recent_interaction": "information"
+      },
+      "template": "You're welcome! If you have any other questions in the future, don't hesitate to contact us. Have a great day!",
+      "tone": "helpful",
+      "formality": "neutral"
+    },
+    {
+      "id": "transfer_goodbye",
+      "priority": 4,
+      "conditions": {
+        "intent": "goodbye",
+        "recent_interaction": "transfer"
+      },
+      "template": "You're being transferred to a representative now. Thank you for choosing {{business_name}}!",
+      "tone": "professional",
+      "formality": "neutral"
+    },
+    {
+      "id": "after_hours_goodbye",
+      "priority": 5,
+      "conditions": {
+        "business_hours": "closed"
+      },
+      "template": "Thank you for contacting {{business_name}}. We are currently closed, but your message has been noted. We will get back to you during our next business day. Have a great day!",
+      "tone": "polite",
+      "formality": "neutral"
+    },
+    {
+      "id": "feedback_goodbye",
+      "priority": 6,
+      "conditions": {
+        "satisfaction_check": "requested"
+      },
+      "template": "Thank you for your feedback! We appreciate your business. Have a wonderful day!",
+      "tone": "appreciative",
+      "formality": "neutral"
+    },
+    {
+      "id": "follow_up_goodbye",
+      "priority": 7,
+      "conditions": {
+        "follow_up_needed": "true"
+      },
+      "template": "Thank you for your time. We will follow up with you regarding {{follow_up_topic}}. Have a great day!",
+      "tone": "professional",
+      "formality": "neutral"
+    }
+  ]
+}
