@@ -1,0 +1,94 @@
+# Speaches configuration for Filo AI Receptionist
+# Optimized for GPU-accelerated speech-to-text
+
+# Model configuration
+model:
+  # Model name (must match available models)
+  name: "Systran/faster-whisper-medium"
+  # Model cache directory
+  cache_dir: "/root/.cache/huggingface"
+  # Model TTL (0 = keep loaded)
+  ttl: 0
+  # Compute type (float16 for GPU)
+  compute_type: "float16"
+  # Device (cuda for GPU, cpu for CPU)
+  device: "cuda"
+
+# Audio processing
+audio:
+  # Sample rate
+  sample_rate: 16000
+  # Audio format
+  format: "wav"
+  # Chunk size for processing
+  chunk_size: 1024
+  # Buffer size
+  buffer_size: 8192
+
+# API configuration
+api:
+  # Host to bind to
+  host: "0.0.0.0"
+  # Port to listen on
+  port: 8000
+  # Maximum concurrent requests
+  max_concurrent_requests: 4
+  # Request timeout
+  timeout: 60
+  # Enable CORS
+  cors_enabled: true
+  # CORS origins
+  cors_origins: ["*"]
+
+# Performance tuning
+performance:
+  # Number of workers
+  workers: 2
+  # Batch size for processing
+  batch_size: 1
+  # Enable mixed precision
+  mixed_precision: true
+  # GPU memory fraction
+  gpu_memory_fraction: 0.8
+
+# Logging
+logging:
+  # Log level
+  level: "INFO"
+  # Log format
+  format: "json"
+  # Log file
+  file: "/var/log/speaches/speaches.log"
+  # Maximum log file size
+  max_file_size: "100MB"
+  # Maximum number of log files
+  max_files: 5
+
+# Health checks
+health:
+  # Health check endpoint
+  endpoint: "/health"
+  # Health check interval
+  interval: 30
+  # Health check timeout
+  timeout: 10
+
+# Security
+security:
+  # API key (optional)
+  api_key: ""
+  # Rate limiting (requests per minute)
+  rate_limit: 60
+  # Rate limit window
+  rate_limit_window: 60
+
+# Monitoring
+monitoring:
+  # Enable metrics
+  metrics_enabled: true
+  # Metrics endpoint
+  metrics_endpoint: "/metrics"
+  # Prometheus pushgateway (optional)
+  prometheus_pushgateway: ""
+  # Metrics prefix
+  metrics_prefix: "speaches"
