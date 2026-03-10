@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -29,6 +30,13 @@ type Config struct {
 	RedisAddr   string
 	LLMModel    string
 	SystemPrompt string
+	TENVADMode  int
+	TurnDetectionBaseURL string
+	TurnDetectionAPIKey  string
+	TurnDetectionModel   string
+	TurnDetectionTemperature float64
+	TurnDetectionTopP   float64
+	TurnDetectionThresholdMs int
 }
 
 func loadConfig() Config {
@@ -38,6 +46,26 @@ func loadConfig() Config {
 		}
 		return def
 	}
+	
+	// Helper functions to get integer and float values from env
+	getInt := func(key string, def int) int {
+		if v := os.Getenv(key); v != "" {
+			if val, err := strconv.Atoi(v); err == nil {
+				return val
+			}
+		}
+		return def
+	}
+	
+	getFloat := func(key string, def float64) float64 {
+		if v := os.Getenv(key); v != "" {
+			if val, err := strconv.ParseFloat(v, 64); err == nil {
+				return val
+			}
+		}
+	return def
+	}
+	
 	return Config{
 		Port:        get("PORT", "8080"),
 		SpeachesURL: get("SPEACHES_URL", "http://localhost:8000"),
@@ -47,6 +75,13 @@ func loadConfig() Config {
 		LLMModel:    get("LLM_MODEL", "llama3.1:8b"),
 		SystemPrompt: get("SYSTEM_PROMPT",
 			"You are a helpful, concise voice assistant. Keep responses short and conversational. Avoid markdown formatting."),
+		TENVADMode: getInt("TEN_VAD_MODE", 2),
+		TurnDetectionBaseURL: get("TURN_DETECTION_BASE_URL", "http://localhost:8000/v1"),
+		TurnDetectionAPIKey:  get("TURN_DETECTION_API_KEY", "your-turn-detection-api-key"),
+		TurnDetectionModel:   get("TURN_DETECTION_MODEL", "turn-detection-model"),
+		TurnDetectionTemperature: getFloat("TURN_DETECTION_TEMPERATURE", 0.1),
+		TurnDetectionTopP:   getFloat("TURN_DETECTION_TOP_P", 0.1),
+		TurnDetectionThresholdMs: getInt("TURN_DETECTION_THRESHOLD_MS", 500),
 	}
 }
 
@@ -68,73 +103,6 @@ type OutboundMsg struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// ── VAD ───────────────────────────────────────────────────────────────────────
-// Input: 16kHz mono s16le PCM (from browser AudioContext at 16kHz)
-// Browser sends 100ms chunks (1600 samples = 3200 bytes)
-
-const (
-	vadSilenceMs    = 1200  // wait longer before cutting off
-	vadMinSpeechMs  = 100   // catch shorter utterances
-	vadEnergyThresh = 100   // lower threshold — more sensitive
-	vadSampleRate   = 16000
-)
-
-type vad struct {
-	mu           sync.Mutex
-	buf          []int16
-	silenceSamps int
-	speechSamps  int
-	active       bool
-	onUtterance  func([]int16)
-}
-
-func newVAD(onUtterance func([]int16)) *vad {
-	return &vad{onUtterance: onUtterance}
-}
-
-func (v *vad) feed(samples []int16) {
-	energy := rms(samples)
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	silenceThresh := vadSilenceMs * vadSampleRate / 1000
-	minSpeech := vadMinSpeechMs * vadSampleRate / 1000
-
-	if energy >= vadEnergyThresh {
-		v.silenceSamps = 0
-		v.speechSamps += len(samples)
-		v.active = true
-		v.buf = append(v.buf, samples...)
-	} else if v.active {
-		v.silenceSamps += len(samples)
-		v.buf = append(v.buf, samples...)
-		if v.silenceSamps >= silenceThresh {
-			if v.speechSamps >= minSpeech {
-				out := make([]int16, len(v.buf))
-				copy(out, v.buf)
-				go v.onUtterance(out)
-			} else {
-				log.Printf("VAD: dropped utterance, too short (%dms)", v.speechSamps*1000/vadSampleRate)
-			}
-			v.buf = v.buf[:0]
-			v.speechSamps = 0
-			v.silenceSamps = 0
-			v.active = false
-		}
-	}
-}
-
-func rms(s []int16) float64 {
-	if len(s) == 0 {
-		return 0
-	}
-	var sum float64
-	for _, v := range s {
-		f := float64(v)
-		sum += f * f
-	}
-	return math.Sqrt(sum / float64(len(s)))
-}
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
@@ -149,7 +117,8 @@ type session struct {
 	conn   *websocket.Conn
 	rdb    *redis.Client
 	send   chan []byte
-	vad    *vad
+	vad    *TenVAD
+	turnDetector *TurnDetector
 
 	// pipeline cancellation: cancel current TTS/LLM if user starts speaking
 	cancelMu  sync.Mutex
@@ -164,7 +133,20 @@ func newSession(id string, conn *websocket.Conn, cfg Config, rdb *redis.Client) 
 		rdb:  rdb,
 		send: make(chan []byte, 64),
 	}
-	s.vad = newVAD(s.onUtterance)
+	s.vad = NewTenVAD(s.onUtterance)
+	s.vad.SetMode(cfg.TENVADMode) // Set the VAD mode from config
+	
+	// Initialize turn detector with config values
+	turnConfig := &TurnDetectionConfig{
+		BaseURL:     cfg.TurnDetectionBaseURL,
+		APIKey:      cfg.TurnDetectionAPIKey,
+		Model:       cfg.TurnDetectionModel,
+		Temperature: cfg.TurnDetectionTemperature,
+		TopP:        cfg.TurnDetectionTopP,
+		ThresholdMs: cfg.TurnDetectionThresholdMs,
+	}
+	s.turnDetector = NewTurnDetector(turnConfig)
+	
 	return s
 }
 
@@ -196,11 +178,29 @@ func (s *session) onUtterance(pcm []int16) {
 	s.sendJSON(OutboundMsg{Type: "transcript", Transcript: transcript})
 	log.Printf("[%s] USER: %s", s.id, transcript)
 
-	// 2. History
+	// 2. Turn Detection - Check if user has finished speaking
+	turnCtx, turnCancel := context.WithTimeout(ctx, 5*time.Second)
+	turnState, err := s.turnDetector.Evaluate(turnCtx, transcript)
+	turnCancel()
+	
+	if err != nil {
+		log.Printf("[%s] Turn detection error: %v", s.id, err)
+		// Continue with processing even if turn detection fails
+	} else {
+		log.Printf("[%s] Turn detection state: %s", s.id, turnState.String())
+		
+		// If turn detection indicates user is not finished, skip processing
+		if turnState == TurnStateUnfinished {
+			log.Printf("[%s] User not finished speaking, skipping processing", s.id)
+			return
+		}
+	}
+
+	// 3. History
 	history, _ := s.getHistory(ctx)
 	history = append(history, message{Role: "user", Content: transcript})
 
-	// 3. LLM
+	// 4. LLM
 	reply, err := s.chat(ctx, history)
 	if err != nil {
 		log.Printf("[%s] LLM error: %v", s.id, err)
@@ -210,11 +210,11 @@ func (s *session) onUtterance(pcm []int16) {
 	log.Printf("[%s] BOT: %s", s.id, reply)
 	s.sendJSON(OutboundMsg{Type: "reply_text", Text: reply})
 
-	// 4. Save history
+	// 5. Save history
 	history = append(history, message{Role: "assistant", Content: reply})
 	s.saveHistory(ctx, history)
 
-	// 5. TTS
+	// 6. TTS
 	wav, err := s.synthesize(ctx, reply)
 	if err != nil {
 		log.Printf("[%s] TTS error: %v", s.id, err)
