@@ -1,0 +1,84 @@
+{
+  "templates": [
+    {
+      "id": "business_hours_inquiry",
+      "priority": 1,
+      "conditions": {
+        "question_type": "business_hours"
+      },
+      "template": "We are open from {{business_hours}}. Is there anything I can help you with during our business hours?",
+      "tone": "informative",
+      "formality": "neutral"
+    },
+    {
+      "id": "services_inquiry",
+      "priority": 2,
+      "conditions": {
+        "question_type": "services"
+      },
+      "template": "We offer the following services: {{services_list}}. Which service are you interested in learning more about?",
+      "tone": "helpful",
+      "formality": "neutral"
+    },
+    {
+      "id": "pricing_inquiry",
+      "priority": 3,
+      "conditions": {
+        "question_type": "pricing"
+      },
+      "template": "Our pricing varies depending on the service. Let me search our knowledge base for specific pricing information for you.",
+      "tone": "professional",
+      "formality": "neutral"
+    },
+    {
+      "id": "location_inquiry",
+      "priority": 4,
+      "conditions": {
+        "question_type": "location"
+      },
+      "template": "We are located at {{business_location}}. {{directions_info}}",
+      "tone": "helpful",
+      "formality": "neutral"
+    },
+    {
+      "id": "contact_inquiry",
+      "priority": 5,
+      "conditions": {
+        "question_type": "contact"
+      },
+      "template": "You can reach us at {{business_phone}} or email us at {{business_email}}. Our website is {{business_website}}.",
+      "tone": "informative",
+      "formality": "neutral"
+    },
+    {
+      "id": "faq_response",
+      "priority": 6,
+      "conditions": {
+        "question_type": "faq"
+      },
+      "template": "{{faq_answer}}",
+      "tone": "clear",
+      "formality": "neutral"
+    },
+    {
+      "id": "knowledge_search",
+      "priority": 7,
+      "conditions": {
+        "question_type": "general"
+      },
+      "template": "Let me search our knowledge base for information about {{topic}}.",
+      "tone": "helpful",
+      "formality": "neutral"
+    },
+    {
+      "id": "unknown_inquiry",
+      "priority": 8,
+      "conditions": {
+        "question_type": "unknown"
+      },
+      "template": "I'm not sure I understand your question completely. Could you please provide more details or rephrase your question? Alternatively, I can transfer you to a representative who may be able to assist you further.",
+      "tone": "polite",
+      "formality": "neutral"
+    }
+  ]
+}

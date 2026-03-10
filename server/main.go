@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +20,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ── Config ────────────────────────────────────────────────────
 
 type Config struct {
 	Port        string
@@ -37,6 +37,19 @@ type Config struct {
 	TurnDetectionTemperature float64
 	TurnDetectionTopP   float64
 	TurnDetectionThresholdMs int
+	QdrantURL   string
+	QdrantAPIKey string
+	QdrantCollectionName string
+	N8nURL      string
+	N8nUser     string
+	N8nPassword string
+	BusinessName string
+	BusinessHours string
+	BusinessLanguage string
+	PersonalityFriendly bool
+	PersonalityFormal bool
+	GoogleCalendarID string
+	GoogleCredentialsPath string
 }
 
 func loadConfig() Config {
@@ -54,7 +67,7 @@ func loadConfig() Config {
 				return val
 			}
 		}
-		return def
+	return def
 	}
 	
 	getFloat := func(key string, def float64) float64 {
@@ -64,6 +77,15 @@ func loadConfig() Config {
 			}
 		}
 	return def
+	}
+	
+	getBool := func(key string, def bool) bool {
+		if v := os.Getenv(key); v != "" {
+			if val, err := strconv.ParseBool(v); err == nil {
+				return val
+			}
+		}
+		return def
 	}
 	
 	return Config{
@@ -81,7 +103,20 @@ func loadConfig() Config {
 		TurnDetectionModel:   get("TURN_DETECTION_MODEL", "turn-detection-model"),
 		TurnDetectionTemperature: getFloat("TURN_DETECTION_TEMPERATURE", 0.1),
 		TurnDetectionTopP:   getFloat("TURN_DETECTION_TOP_P", 0.1),
-		TurnDetectionThresholdMs: getInt("TURN_DETECTION_THRESHOLD_MS", 500),
+		TurnDetectionThresholdMs: getInt("TURN_DETECTION_THRESHOLD_MS", 50),
+		QdrantURL:   get("QDRANT_URL", "http://localhost:6333"),
+		QdrantAPIKey: get("QDRANT_API_KEY", ""),
+		QdrantCollectionName: get("QDRANT_COLLECTION_NAME", "knowledge_base"),
+		N8nURL:      get("N8N_URL", "http://localhost:5678"),
+		N8nUser:     get("N8N_USER", ""),
+		N8nPassword: get("N8N_PASSWORD", ""),
+		BusinessName: get("BUSINESS_NAME", "Your Business Name"),
+		BusinessHours: get("BUSINESS_HOURS", "9:00-18:00"),
+		BusinessLanguage: get("BUSINESS_LANGUAGE", "en"),
+		PersonalityFriendly: getBool("PERSONALITY_FRIENDLY", true),
+		PersonalityFormal: getBool("PERSONALITY_FORMAL", false),
+		GoogleCalendarID: get("GOOGLE_CALENDAR_ID", ""),
+		GoogleCredentialsPath: get("GOOGLE_CREDENTIALS_PATH", ""),
 	}
 }
 
@@ -119,6 +154,7 @@ type session struct {
 	send   chan []byte
 	vad    *TenVAD
 	turnDetector *TurnDetector
+	ragSystem *RAGSystem
 
 	// pipeline cancellation: cancel current TTS/LLM if user starts speaking
 	cancelMu  sync.Mutex
@@ -146,6 +182,10 @@ func newSession(id string, conn *websocket.Conn, cfg Config, rdb *redis.Client) 
 		ThresholdMs: cfg.TurnDetectionThresholdMs,
 	}
 	s.turnDetector = NewTurnDetector(turnConfig)
+	
+	// Initialize RAG system
+	qdrantClient := NewQdrantClient(cfg.QdrantURL, cfg.QdrantAPIKey, cfg.QdrantCollectionName)
+	s.ragSystem = NewRAGSystem(qdrantClient)
 	
 	return s
 }
@@ -196,12 +236,28 @@ func (s *session) onUtterance(pcm []int16) {
 		}
 	}
 
-	// 3. History
+	// 3. Intent Classification
+	intentHandler := NewIntentHandler()
+	intentContext := intentHandler.ProcessIntent(transcript)
+	
+	// Log intent classification
+	intentLogger := &IntentLogger{}
+	intentLogger.LogIntent(s.id, transcript, intentContext)
+	
+	// 4. RAG Context Retrieval
+	ragContext, err := s.ragSystem.GetRAGContext(ctx, transcript)
+	if err != nil {
+		log.Printf("[%s] RAG error: %v", s.id, err)
+		// Continue without RAG context
+		ragContext = ""
+	}
+
+	// 5. History
 	history, _ := s.getHistory(ctx)
 	history = append(history, message{Role: "user", Content: transcript})
 
-	// 4. LLM
-	reply, err := s.chat(ctx, history)
+	// 6. LLM with Intent and RAG Context
+	reply, err := s.chatWithIntentAndRAG(ctx, history, intentContext, ragContext)
 	if err != nil {
 		log.Printf("[%s] LLM error: %v", s.id, err)
 		s.sendJSON(OutboundMsg{Type: "error", Error: "LLM failed"})
@@ -210,11 +266,11 @@ func (s *session) onUtterance(pcm []int16) {
 	log.Printf("[%s] BOT: %s", s.id, reply)
 	s.sendJSON(OutboundMsg{Type: "reply_text", Text: reply})
 
-	// 5. Save history
+	// 7. Save history
 	history = append(history, message{Role: "assistant", Content: reply})
 	s.saveHistory(ctx, history)
 
-	// 6. TTS
+	// 8. TTS
 	wav, err := s.synthesize(ctx, reply)
 	if err != nil {
 		log.Printf("[%s] TTS error: %v", s.id, err)
@@ -266,7 +322,7 @@ func (s *session) readPump() {
 		if mt == websocket.BinaryMessage {
 			// raw PCM from browser
 			samples := bytesToInt16(data)
-			s.vad.feed(samples)
+			s.vad.Feed(samples)
 		}
 		// text messages reserved for future config
 	}
@@ -337,6 +393,83 @@ func (s *session) chat(ctx context.Context, history []message) (string, error) {
 
 	rawBody, _ := io.ReadAll(resp.Body)
 	log.Printf("[%s] LLM raw: %s", s.id, string(rawBody))
+	var result struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	json.Unmarshal(rawBody, &result)
+	return result.Message.Content, nil
+}
+
+// chatWithIntentAndRAG processes chat with intent classification and RAG context
+func (s *session) chatWithIntentAndRAG(ctx context.Context, history []message, intentContext *IntentContext, ragContext string) (string, error) {
+	// Build enhanced system prompt with business context
+	personaManager := NewPersonaManager()
+	enhancedSystemPrompt := personaManager.GenerateSystemPrompt(s.cfg)
+	
+	// Build messages with intent and RAG context
+	messages := []map[string]string{
+		{"role": "system", "content": enhancedSystemPrompt},
+	}
+	
+	// Add RAG context if available
+	if ragContext != "" {
+		messages = append(messages, map[string]string{
+			"role": "system", "content": "Business Knowledge: " + ragContext,
+		})
+	}
+	
+	// Add intent context
+	if intentContext != nil && intentContext.Intent != IntentUnknown {
+		messages = append(messages, map[string]string{
+			"role": "system", "content": fmt.Sprintf("User Intent: %s (Confidence: %.2f)", intentContext.Intent, intentContext.Confidence),
+		})
+	}
+	
+	// Add conversation history
+	for _, m := range history {
+		messages = append(messages, map[string]string{
+			"role": m.Role, "content": m.Content,
+		})
+	}
+
+	// Add special instructions based on intent
+	if intentContext != nil {
+		switch intentContext.Intent {
+		case IntentBook:
+			messages = append(messages, map[string]string{
+				"role": "system", "content": "The user wants to book an appointment. Check availability and help them schedule.",
+			})
+		case IntentInquire:
+			messages = append(messages, map[string]string{
+				"role": "system", "content": "The user is asking a question. Use the business knowledge to provide accurate information.",
+			})
+		case IntentTransfer:
+			messages = append(messages, map[string]string{
+				"role": "system", "content": "The user wants to speak to a representative. Prepare to transfer them.",
+			})
+		}
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"model":    s.cfg.LLMModel,
+		"messages": messages,
+		"stream":   false,
+	})
+
+	req, _ := http.NewRequestWithContext(ctx, "POST",
+		s.cfg.OllamaURL+"/api/chat", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	rawBody, _ := io.ReadAll(resp.Body)
+	log.Printf("[%s] LLM with intent/RAG raw: %s", s.id, string(rawBody))
 	var result struct {
 		Message struct {
 			Content string `json:"content"`

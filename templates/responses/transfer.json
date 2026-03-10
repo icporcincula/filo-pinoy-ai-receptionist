@@ -1,0 +1,74 @@
+{
+  "templates": [
+    {
+      "id": "transfer_request",
+      "priority": 1,
+      "conditions": {
+        "intent": "transfer"
+      },
+      "template": "I'll transfer you to a representative who can assist you further. Please hold on for a moment.",
+      "tone": "helpful",
+      "formality": "neutral"
+    },
+    {
+      "id": "transfer_unavailable",
+      "priority": 2,
+      "conditions": {
+        "representatives_available": "false"
+      },
+      "template": "I'm sorry, but all our representatives are currently unavailable. You can leave a message and we'll get back to you as soon as possible, or you can call us directly at {{business_phone}}.",
+      "tone": "apologetic",
+      "formality": "neutral"
+    },
+    {
+      "id": "transfer_business_hours",
+      "priority": 3,
+      "conditions": {
+        "business_hours": "closed"
+      },
+      "template": "Our representatives are not available outside of business hours. You can leave a message and we'll get back to you during our next business day, or you can call us at {{business_phone}} during business hours.",
+      "tone": "informative",
+      "formality": "neutral"
+    },
+    {
+      "id": "transfer_queue",
+      "priority": 4,
+      "conditions": {
+        "queue_length": "long"
+      },
+      "template": "All our representatives are currently busy. You are number {{queue_position}} in the queue. Estimated wait time is {{wait_time}}. Would you like to hold or leave a message?",
+      "tone": "polite",
+      "formality": "neutral"
+    },
+    {
+      "id": "transfer_immediate",
+      "priority": 5,
+      "conditions": {
+        "representatives_available": "true"
+      },
+      "template": "Great! I'm connecting you with {{representative_name}} now. Please hold on.",
+      "tone": "positive",
+      "formality": "neutral"
+    },
+    {
+      "id": "transfer_callback",
+      "priority": 6,
+      "conditions": {
+        "customer_preference": "callback"
+      },
+      "template": "I can arrange for a representative to call you back at {{callback_time}}. Is that acceptable?",
+      "tone": "helpful",
+      "formality": "neutral"
+    },
+    {
+      "id": "transfer_alternatives",
+      "priority": 7,
+      "conditions": {
+        "transfer_not_needed": "true"
+      },
+      "template": "I can actually help you with that right now. Let me assist you with {{specific_request}}.",
+      "tone": "helpful",
+      "formality": "neutral"
+    }
+  ]
+}

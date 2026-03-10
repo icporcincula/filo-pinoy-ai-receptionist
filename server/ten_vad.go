@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+// Constants for VAD configuration
+const (
+	vadSampleRate = 16000
+	vadFrameMs    = 30
+	vadFrameSize  = vadSampleRate * vadFrameMs / 1000
+)
+
 // TenVAD represents the TEN Voice Activity Detection implementation
 type TenVAD struct {
 	mu           sync.Mutex
